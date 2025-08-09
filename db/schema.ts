@@ -26,24 +26,11 @@ export const events = pgTable("events", {
   imageUrl: varchar("image_url", { length: 500 }),
   maxParticipants: integer("max_participants").notNull(),
   eventDate: timestamp("event_date", { mode: "date" }).notNull(), // 🆕 วันจัดอีเวนต์
+  createBy: uuid("user_id")
+    .notNull()
+    .references(() => users.id, { onDelete: "cascade" }),
+  isDone: boolean("is_done").default(false),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "date", precision: 3 }).$onUpdate(() => new Date()),
 });
 
-// 🙋‍♂️ Table: event_participants (many-to-many)
-export const eventParticipants = pgTable("event_participants", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  userId: uuid("user_id")
-    .notNull()
-    .references(() => users.id, { onDelete: "cascade" }),
-  eventId: uuid("event_id")
-    .notNull()
-    .references(() => events.id, { onDelete: "cascade" }),
-  joinedAt: timestamp("joined_at").defaultNow().notNull(),
-}, (table) => ({
-  // 💡 unique constraint to prevent duplicate join
-  uniqueUserEvent: {
-    unique: true,
-    columns: [table.userId, table.eventId],
-  },
-}));

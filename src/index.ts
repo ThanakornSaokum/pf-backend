@@ -2,7 +2,7 @@ import "dotenv/config";
 import { dbClient } from "@db/client.js";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
-import { users, events, eventParticipants } from "@db/schema.js"; // ใช้ schema ที่คุณมี
+import { users, events } from "@db/schema.js"; // ใช้ schema ที่คุณมี
 import { eq, and, count } from "drizzle-orm";
 import cors from "cors";
 import Debug from "debug";
@@ -54,7 +54,6 @@ app.post("/auth/register", async (req, res, next) => {
       email,
       passwordHash: hash,
       name,
-      isAdmin: false,
     });
     res.status(201).json({ message: "User registered" });
   } catch (err) {
@@ -74,7 +73,7 @@ app.post("/auth/login", async (req, res, next) => {
 
     req.session
 
-    const token = jwt.sign({ id: user.id, isAdmin: user.isAdmin }, JWT_SECRET, { expiresIn: '1h'} );
+    const token = jwt.sign({ id: user.id, name: user.name }, JWT_SECRET, { expiresIn: '1h'} );
     res.cookie("token", token, {
       maxAge: 3600
     });
@@ -105,19 +104,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
 // ===== GET ALL EVENTS =====
 app.get("/events", authMiddleware, async (req, res, next) => {
   try {
-    const allEvents = await dbClient
-      .select({
-        id: events.id,
-        title: events.title,
-        description: events.description,
-        imageUrl: events.imageUrl,
-        maxParticipants: events.maxParticipants,
-        eventDate: events.eventDate,
-        totalParticipants: count(eventParticipants.eventId),
-      })
-      .from(events)
-      .leftJoin(eventParticipants, eq(events.id, eventParticipants.eventId))
-      .groupBy(events.id);
+    const allEvents = await dbClient.query.events.findMany();
 
     res.json({
       message: "Get All Event Successful!!!",
@@ -131,6 +118,7 @@ app.get("/events", authMiddleware, async (req, res, next) => {
 // ===== CREATE EVENT (admin only) =====
 app.post("/events", authMiddleware, async (req, res, next) => {
   try {
+    const user_id = req.user!.id
     const { title, description, imageUrl, maxParticipants, eventDate } = req.body;
     await dbClient.insert(events).values({
       id: crypto.randomUUID(),
@@ -139,6 +127,7 @@ app.post("/events", authMiddleware, async (req, res, next) => {
       imageUrl,
       maxParticipants,
       eventDate: new Date(eventDate),
+      createBy: user_id
     });
     res.status(201).json({ message: "Event created" });
   } catch (err) {
@@ -146,10 +135,17 @@ app.post("/events", authMiddleware, async (req, res, next) => {
   }
 });
 
-// ===== UPDATE EVENT (admin only) =====
+// ===== UPDATE EVENT (user's event only) =====
 app.patch("/events", authMiddleware, async (req, res, next) => {
   try {
+    const userId = req.user!.id;
     const { id, title, description, imageUrl, maxParticipants, eventDate } = req.body;
+
+      // ตรวจสอบว่าเป็นเจ้าของ event
+    const [existing] = await dbClient.select().from(events).where(eq(events.id, id));
+    if (!existing) return res.status(404).json({ error: "Event not found" });
+    if (existing.createBy !== userId) return res.status(403).json({ error: "Forbidden" });
+
     await dbClient.update(events).set({
       title,
       description,
@@ -157,130 +153,48 @@ app.patch("/events", authMiddleware, async (req, res, next) => {
       maxParticipants,
       eventDate: new Date(eventDate),
     }).where(eq(events.id, id));
+
     res.json({ message: "Event updated" });
   } catch (err) {
     next(err);
   }
 });
 
-// ===== DELETE EVENT (admin only) =====
+// ===== DELETE EVENT (user's event only) =====
 app.delete("/events", authMiddleware, async (req, res, next) => {
   try {
+    const userId = req.user!.id;
     const { id } = req.body;
+
+    const [existing] = await dbClient.select().from(events).where(eq(events.id, id));
+    if (!existing) return res.status(404).json({ error: "Event not found" });
+    if (existing.createBy !== userId) return res.status(403).json({ error: "Forbidden" });
+
     await dbClient.delete(events).where(eq(events.id, id));
     res.json({ message: "Event deleted" });
+    
   } catch (err) {
     next(err);   
   }
 });
 
-// ===== JOIN EVENT (user only) =====
-app.post("/events/join", authMiddleware, async (req, res, next) => {
+app.patch("/events/done", authMiddleware, async (req, res, next) => {
   try {
-    const eventId = req.body;
-    const userId = req.user?.id; // ใช้ userId จาก req.user
+    const { id, isDone } = req.body;
 
-    if (!userId) return res.status(401).json({ error: "Not found User!" });
-
-    // Check the user is available
-    const [user] = await dbClient.select().from(users).where(eq(users.id, userId));
-    if (!user) return res.status(400).json({ error: "Not found that user" });
-
-    // Check count joined
-    const countResult = await dbClient
-      .select({ count: count() })
-      .from(eventParticipants)
-      .where(eq(eventParticipants.eventId, eventId));
-
-    const [event] = await dbClient.select().from(events).where(eq(events.id, eventId));
-    if (!event) return res.status(404).json({ error: "Event not found" });
-
-    if (countResult[0].count >= event.maxParticipants)
-      return res.status(400).json({ error: "Event full" });
-
-    // join ได้
-    await dbClient.insert(eventParticipants).values({
-      userId,
-      eventId,
-    });
-    res.json({ message: "Joined event" });
-  } catch (err) {
-    next(err);
-  }
-});
-
-// ===== CANCEL EVENT PARTICIPATION (user only) =====
-app.post("/events/cancel", authMiddleware, async (req, res, next) => {
-  try {
-    const eventId = req.body
-    const userId = req.user?.id;
-
-    if (!userId) return res.status(401).json({ error: "User not found" });
-
-    // ตรวจสอบว่า user มีอยู่ในระบบ
-    const [user] = await dbClient.select().from(users).where(eq(users.id, userId));
-    if (!user) return res.status(400).json({ error: "User that not found" });
-
-    // ตรวจสอบว่า event มีอยู่
-    const [event] = await dbClient.select().from(events).where(eq(events.id, eventId));
-    if (!event) return res.status(404).json({ error: "Not Found Event" });
-
-    // ตรวจสอบว่าผู้ใช้เข้าร่วม event นี้หรือไม่
-    const existingParticipant = await dbClient
-      .select()
-      .from(eventParticipants)
-      .where(and(
-        eq(eventParticipants.eventId, eventId),
-        eq(eventParticipants.userId, userId)
-        ))
-    if (existingParticipant.length === 0) {
-      return res.status(400).json({ error: "User is not join this event" });
+    // ตรวจสอบสิทธิ์: ต้องเป็นเจ้าของ event หรือ admin
+    const event = await dbClient.select().from(events).where(eq(events.id, id)).limit(1);
+    if (!event.length) {
+      return res.status(404).json({ error: "Event not found" });
     }
 
-    // ยกเลิกการเข้าร่วม
+    // อัปเดตสถานะ
     await dbClient
-      .delete(eventParticipants)
-      .where(and(
-        eq(eventParticipants.eventId, eventId),
-        eq(eventParticipants.userId, userId)
-      ))
-    res.json({ message: "Cancel the event success!!!" });
-  } catch (err) {
-    next(err);
-  }
-});
+      .update(events)
+      .set({ isDone })
+      .where(eq(events.id, id));
 
-// Detail that participants
-app.get("/events/participants", authMiddleware, async (req, res, next) => {
-  try {
-    const eventId = req.body;
-
-    // check event is available
-    const [event] = await dbClient.select().from(events).where(eq(events.id, eventId));
-    if (!event) return res.status(404).json({ error: "Event not found" });
-
-    // count of participants
-    const countResult = await dbClient
-      .select({ totalParticipants: count() })
-      .from(eventParticipants)
-      .where(eq(eventParticipants.eventId, eventId));
-
-    // get the participants
-    const participants = await dbClient
-      .select({
-        id: users.id,
-        name: users.name,
-        email: users.email,
-      })
-      .from(eventParticipants)
-      .innerJoin(users, eq(eventParticipants.userId, users.id))
-      .where(eq(eventParticipants.eventId, eventId));
-
-    res.json({
-      message: "Get Participants Successful!!",
-      totalParticipants: countResult[0].totalParticipants,
-      participants,
-    });
+    res.json({ success: true , event: id });
   } catch (err) {
     next(err);
   }
