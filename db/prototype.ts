@@ -33,7 +33,6 @@ async function insertAdmin() {
     name: "Admin",
     email: email,
     passwordHash: hashedPassword,
-    isAdmin: true,
   });
 
   console.log("✅ Admin inserted:", email);

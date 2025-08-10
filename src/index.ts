@@ -37,7 +37,7 @@ const JWT_SECRET = 'secret'
 declare global {
   namespace Express {
     interface Request {
-      user?: { id: string; isAdmin: boolean };
+      user?: { id: string; };
     }
   }
 }
@@ -93,7 +93,7 @@ function authMiddleware(req: Request, res: Response, next: NextFunction) {
 
   const token = authHeader.split(" ")[1];
   try {
-    const decoded = jwt.verify(token, JWT_SECRET) as { id: string; isAdmin: boolean };
+    const decoded = jwt.verify(token, JWT_SECRET) as { id: string;};
     req.user = decoded
     next();
   } catch {
